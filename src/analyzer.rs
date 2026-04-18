@@ -25,9 +25,14 @@ static SCRIPT_STYLE: Lazy<Regex> =
 static TAG: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]*>").unwrap());
 static WHITESPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
 static H2: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)<h2\b[^>]*>").unwrap());
+static H2_INNER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<h2\b[^>]*>(.*?)</h2>").unwrap());
+static P_INNER: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<p\b[^>]*>(.*?)</p>").unwrap());
 static IMG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)<img\b[^>]*>").unwrap());
 static IMG_ALT: Lazy<Regex> = Lazy::new(|| Regex::new(r#"(?i)\balt\s*=\s*"[^"]+""#).unwrap());
 static NON_ASCII: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^\x00-\x7F]").unwrap());
+static A_HREF: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)<a\s+[^>]*?href\s*=\s*"([^"]+)""#).unwrap());
+static SENTENCE_END: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.!?。?]+\s*").unwrap());
 
 #[derive(Debug, Deserialize)]
 pub struct AnalyzeRequest {
@@ -79,7 +84,16 @@ struct Ctx {
     content_length: usize,
     slug: String,
     focus_keyword: String,
+    meta_description: String,
     meta_description_length: usize,
+    /// Cached so multiple link checks don't re-walk the regex.
+    link_counts: LinkCounts,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LinkCounts {
+    internal: usize,
+    outbound: usize,
 }
 
 const ENGINE: &str = "regex";
@@ -93,10 +107,18 @@ pub fn analyze(req: AnalyzeRequest) -> AnalyzeResponse {
         check_focus_keyword_in_title(&ctx),
         check_focus_keyword_in_first_paragraph(&ctx),
         check_focus_keyword_in_content(&ctx),
+        check_keyword_density(&ctx),
+        check_keyword_in_meta_description(&ctx),
+        check_keyword_in_h2(&ctx),
+        check_keyword_in_slug(&ctx),
         check_content_length(&ctx),
         check_h2_count(&ctx),
         check_image_alt_coverage(&ctx),
         check_slug_quality(&ctx),
+        check_internal_links(&ctx),
+        check_outbound_links(&ctx),
+        check_paragraph_length(&ctx),
+        check_sentence_length(&ctx),
     ];
     let score = compute_score(&checks);
     AnalyzeResponse {
@@ -111,6 +133,7 @@ fn normalize(req: AnalyzeRequest) -> Ctx {
     let title = req.title.trim().to_string();
     let content_text = strip_html(&req.content);
     let meta_desc = req.meta_description.trim().to_string();
+    let link_counts = count_links(&req.content);
     Ctx {
         title_length: title.chars().count(),
         title,
@@ -120,7 +143,31 @@ fn normalize(req: AnalyzeRequest) -> Ctx {
         slug: req.slug.trim().to_string(),
         focus_keyword: req.focus_keyword.trim().to_string(),
         meta_description_length: meta_desc.chars().count(),
+        meta_description: meta_desc,
+        link_counts,
     }
+}
+
+fn count_links(html: &str) -> LinkCounts {
+    let mut internal = 0;
+    let mut outbound = 0;
+    for cap in A_HREF.captures_iter(html) {
+        let href = cap[1].trim();
+        if href.starts_with("http://")
+            || href.starts_with("https://")
+            || href.starts_with("//")
+        {
+            outbound += 1;
+        } else if !href.is_empty()
+            && !href.starts_with('#')
+            && !href.starts_with("javascript:")
+            && !href.starts_with("mailto:")
+            && !href.starts_with("tel:")
+        {
+            internal += 1;
+        }
+    }
+    LinkCounts { internal, outbound }
 }
 
 fn strip_html(html: &str) -> String {
@@ -277,6 +324,146 @@ fn check_slug_quality(ctx: &Ctx) -> Check {
     mk("slug_quality", "슬러그", Status::Pass, "슬러그가 적절합니다.".into(), 5)
 }
 
+/* ---------- new checks: keyword distribution ---------- */
+
+fn check_keyword_density(ctx: &Ctx) -> Check {
+    if ctx.focus_keyword.is_empty() {
+        return mk("keyword_density", "키워드 밀도", Status::Na, String::new(), 5);
+    }
+    if ctx.content_length == 0 {
+        return mk("keyword_density", "키워드 밀도", Status::Na, "본문이 비어 있습니다.".into(), 5);
+    }
+    let count = keyword_count(&ctx.content_text, &ctx.focus_keyword);
+    let kw_chars = ctx.focus_keyword.chars().count();
+    let density = count as f64 * kw_chars as f64 / ctx.content_length as f64 * 100.0;
+    let d = format!("{density:.2}");
+    if count == 0 {
+        mk("keyword_density", "키워드 밀도", Status::Fail, "본문에 키워드가 없습니다.".into(), 5)
+    } else if density > 4.0 {
+        mk("keyword_density", "키워드 밀도", Status::Fail, format!("키워드 밀도가 너무 높습니다 ({d}%). 키워드 스터핑으로 보일 수 있습니다."), 5)
+    } else if density > 2.5 {
+        mk("keyword_density", "키워드 밀도", Status::Warning, format!("키워드 밀도가 다소 높습니다 ({d}%). 0.5~2.5% 권장."), 5)
+    } else if density >= 0.5 {
+        mk("keyword_density", "키워드 밀도", Status::Pass, format!("키워드 밀도가 적절합니다 ({d}%)."), 5)
+    } else {
+        mk("keyword_density", "키워드 밀도", Status::Warning, format!("키워드 밀도가 낮습니다 ({d}%). 0.5~2.5% 권장."), 5)
+    }
+}
+
+fn check_keyword_in_meta_description(ctx: &Ctx) -> Check {
+    if ctx.focus_keyword.is_empty() {
+        return mk("keyword_in_meta_description", "메타 설명에 키워드", Status::Na, String::new(), 5);
+    }
+    if ctx.meta_description_length == 0 {
+        return mk("keyword_in_meta_description", "메타 설명에 키워드", Status::Warning, "메타 설명이 비어 있습니다.".into(), 5);
+    }
+    if keyword_count(&ctx.meta_description, &ctx.focus_keyword) > 0 {
+        mk("keyword_in_meta_description", "메타 설명에 키워드", Status::Pass, "메타 설명에 키워드가 포함되어 있습니다.".into(), 5)
+    } else {
+        mk("keyword_in_meta_description", "메타 설명에 키워드", Status::Warning, "메타 설명에 키워드가 없습니다.".into(), 5)
+    }
+}
+
+fn check_keyword_in_h2(ctx: &Ctx) -> Check {
+    if ctx.focus_keyword.is_empty() {
+        return mk("keyword_in_h2", "H2에 키워드", Status::Na, String::new(), 5);
+    }
+    let h2s: Vec<String> = H2_INNER
+        .captures_iter(&ctx.content_html)
+        .map(|c| strip_html(&c[1]))
+        .collect();
+    if h2s.is_empty() {
+        return mk("keyword_in_h2", "H2에 키워드", Status::Na, "H2 헤딩이 없습니다.".into(), 5);
+    }
+    let with_kw = h2s.iter().filter(|h| keyword_count(h, &ctx.focus_keyword) > 0).count();
+    if with_kw > 0 {
+        mk("keyword_in_h2", "H2에 키워드", Status::Pass, format!("{}개 H2에 키워드가 포함되어 있습니다.", with_kw), 5)
+    } else {
+        mk("keyword_in_h2", "H2에 키워드", Status::Warning, "어떤 H2에도 키워드가 없습니다.".into(), 5)
+    }
+}
+
+fn check_keyword_in_slug(ctx: &Ctx) -> Check {
+    if ctx.focus_keyword.is_empty() {
+        return mk("keyword_in_slug", "슬러그에 키워드", Status::Na, String::new(), 5);
+    }
+    if ctx.slug.is_empty() {
+        return mk("keyword_in_slug", "슬러그에 키워드", Status::Warning, "슬러그가 비어 있습니다.".into(), 5);
+    }
+    // 한글 키워드면 영문 슬러그와 직접 비교 불가 — V2에서 transliteration 추가.
+    if NON_ASCII.is_match(&ctx.focus_keyword) {
+        return mk("keyword_in_slug", "슬러그에 키워드", Status::Na, "한국어 키워드는 영문 슬러그와 직접 비교가 어렵습니다.".into(), 5);
+    }
+    if ctx.slug.to_lowercase().contains(&ctx.focus_keyword.to_lowercase()) {
+        mk("keyword_in_slug", "슬러그에 키워드", Status::Pass, "슬러그에 키워드가 포함되어 있습니다.".into(), 5)
+    } else {
+        mk("keyword_in_slug", "슬러그에 키워드", Status::Warning, "슬러그에 키워드가 포함되어 있지 않습니다.".into(), 5)
+    }
+}
+
+/* ---------- new checks: links ---------- */
+
+fn check_internal_links(ctx: &Ctx) -> Check {
+    let n = ctx.link_counts.internal;
+    if n == 0 {
+        mk("internal_links", "내부 링크", Status::Warning, "내부 링크가 없습니다. 관련 글로 1개 이상 링크하세요.".into(), 5)
+    } else {
+        mk("internal_links", "내부 링크", Status::Pass, format!("내부 링크 {n}개."), 5)
+    }
+}
+
+fn check_outbound_links(ctx: &Ctx) -> Check {
+    let n = ctx.link_counts.outbound;
+    if n == 0 {
+        mk("outbound_links", "외부 링크", Status::Warning, "외부 링크가 없습니다. 권위 있는 출처로 1개 이상 링크하면 신뢰도가 올라갑니다.".into(), 5)
+    } else {
+        mk("outbound_links", "외부 링크", Status::Pass, format!("외부 링크 {n}개."), 5)
+    }
+}
+
+/* ---------- new checks: readability ---------- */
+
+fn check_paragraph_length(ctx: &Ctx) -> Check {
+    let lengths: Vec<usize> = P_INNER
+        .captures_iter(&ctx.content_html)
+        .map(|c| strip_html(&c[1]).chars().count())
+        .filter(|&l| l > 0)
+        .collect();
+    if lengths.is_empty() {
+        return mk("paragraph_length", "문단 길이", Status::Na, "문단이 없습니다.".into(), 5);
+    }
+    let max = *lengths.iter().max().unwrap();
+    let too_long = lengths.iter().filter(|&&l| l > 500).count();
+    if too_long > 0 {
+        mk("paragraph_length", "문단 길이", Status::Warning, format!("{}개 문단이 500자보다 깁니다 (최대 {}자). 가독성을 위해 분할하세요.", too_long, max), 5)
+    } else {
+        mk("paragraph_length", "문단 길이", Status::Pass, format!("문단 길이가 적절합니다 (최대 {}자).", max), 5)
+    }
+}
+
+fn check_sentence_length(ctx: &Ctx) -> Check {
+    if ctx.content_length == 0 {
+        return mk("sentence_length", "문장 길이", Status::Na, String::new(), 5);
+    }
+    let sentences: Vec<&str> = SENTENCE_END
+        .split(&ctx.content_text)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if sentences.is_empty() {
+        return mk("sentence_length", "문장 길이", Status::Na, String::new(), 5);
+    }
+    let lengths: Vec<usize> = sentences.iter().map(|s| s.chars().count()).collect();
+    let avg = lengths.iter().sum::<usize>() / lengths.len();
+    let over = lengths.iter().filter(|&&l| l > 80).count();
+    let total = sentences.len();
+    if over > total / 4 && over > 0 {
+        mk("sentence_length", "문장 길이", Status::Warning, format!("긴 문장이 많습니다 ({}/{} 문장이 80자 초과). 평균 {}자.", over, total, avg), 5)
+    } else {
+        mk("sentence_length", "문장 길이", Status::Pass, format!("문장 길이가 적절합니다 (평균 {}자, 총 {} 문장).", avg, total), 5)
+    }
+}
+
 /* ---------- score / grade ---------- */
 
 fn compute_score(checks: &[Check]) -> u32 {
@@ -338,7 +525,55 @@ mod tests {
         let r = analyze(req("", "", "", "", ""));
         assert!(r.score <= 30, "got {}", r.score);
         assert_eq!(r.grade, "poor");
-        assert_eq!(r.checks.len(), 10);
+        assert_eq!(r.checks.len(), 18);
+    }
+
+    #[test]
+    fn keyword_density_in_ideal_range_passes() {
+        // ~2000자 본문 + 워드프레스(5자) 8회 = 40/2000 = 2.0% (pass range)
+        let filler = "한국어 본문이 충분히 길게 작성되어 있습니다. ".repeat(80);
+        let kw_block = " 워드프레스 ".repeat(8);
+        let content = format!("<p>{}{}</p>", filler, kw_block);
+        let r = analyze(req("t", &content, "", "워드프레스", ""));
+        let c = r.checks.iter().find(|c| c.id == "keyword_density").unwrap();
+        assert_eq!(c.status, Status::Pass, "got {:?}: {}", c.status, c.message);
+    }
+
+    #[test]
+    fn keyword_density_excess_fails() {
+        let content = format!("<p>{}</p>", "워드프레스 ".repeat(20));
+        let r = analyze(req("t", &content, "", "워드프레스", ""));
+        let c = r.checks.iter().find(|c| c.id == "keyword_density").unwrap();
+        assert_eq!(c.status, Status::Fail);
+    }
+
+    #[test]
+    fn internal_and_outbound_links_counted_separately() {
+        let html = r##"<p><a href="/about">about</a> <a href="https://example.com">ext</a> <a href="#top">anchor</a> <a href="mailto:x@y">m</a></p>"##;
+        let r = analyze(req("t", html, "", "", ""));
+        let i = r.checks.iter().find(|c| c.id == "internal_links").unwrap();
+        let o = r.checks.iter().find(|c| c.id == "outbound_links").unwrap();
+        assert_eq!(i.status, Status::Pass);
+        assert!(i.message.contains("1개"));
+        assert_eq!(o.status, Status::Pass);
+        assert!(o.message.contains("1개"));
+    }
+
+    #[test]
+    fn keyword_in_h2_passes_when_present() {
+        let html = "<h2>워드프레스 입문</h2><p>본문</p><h2>설치</h2>";
+        let r = analyze(req("t", html, "", "워드프레스", ""));
+        let c = r.checks.iter().find(|c| c.id == "keyword_in_h2").unwrap();
+        assert_eq!(c.status, Status::Pass);
+    }
+
+    #[test]
+    fn long_paragraph_warns() {
+        let long = "가".repeat(600);
+        let html = format!("<p>{long}</p>");
+        let r = analyze(req("t", &html, "", "", ""));
+        let c = r.checks.iter().find(|c| c.id == "paragraph_length").unwrap();
+        assert_eq!(c.status, Status::Warning);
     }
 
     #[test]
