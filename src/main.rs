@@ -15,6 +15,8 @@
 //!   POST /keyword/contains — count keyword occurrences in text
 //!                            (particle-aware: '워드프레스' matches '워드프레스를')
 
+mod analyzer;
+
 use std::net::SocketAddr;
 
 use anyhow::Context;
@@ -129,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/keyword/contains", post(keyword_contains))
+        .route("/analyze", post(analyze_handler))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive());
 
@@ -142,6 +145,12 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     Ok(())
+}
+
+async fn analyze_handler(
+    Json(req): Json<analyzer::AnalyzeRequest>,
+) -> Json<analyzer::AnalyzeResponse> {
+    Json(analyzer::analyze(req))
 }
 
 async fn shutdown_signal() {
