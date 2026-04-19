@@ -22,6 +22,31 @@ pub static NON_ASCII: Lazy<Regex> = Lazy::new(|| Regex::new(r"[^\x00-\x7F]").unw
 pub static A_HREF: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?is)<a\s+[^>]*?href\s*=\s*"([^"]+)""#).unwrap());
 pub static SENTENCE_END: Lazy<Regex> = Lazy::new(|| Regex::new(r"[.!?。?]+\s*").unwrap());
+pub static UL_OL: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)<(ul|ol)\b").unwrap());
+
+/// Korean transition words / connectors. Combined into one regex so we
+/// don't recompile per call. Boundary chars on both sides keep matches honest
+/// (don't catch '그러나' inside other words).
+pub static TRANSITIONS: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?:^|[\s,()\[\]。.!?])(그러나|그렇지만|하지만|반면|한편|따라서|그러므로|그래서|결국|결과적으로|예를\s?들어|구체적으로|말하자면|가령|또한|게다가|더불어|더욱이|즉|다시\s?말해|요컨대|우선|먼저|다음으로|마지막으로|끝으로|물론|사실|참고로|반대로|오히려|특히|즉시)"
+    ).unwrap()
+});
+
+/// 해요체 endings — informal-polite. Followed by sentence-end punctuation
+/// or whitespace so we don't misclassify mid-sentence morphemes.
+pub static HAEYO: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?:해요|예요|이에요|에요|네요|어요|아요|거예요|이지요|지요|나요|ㄴ가요|는가요)[\s.!?。]"
+    ).unwrap()
+});
+
+/// 합쇼체 endings — formal. Same boundary requirement.
+pub static HAPSYO: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?:합니다|입니다|습니다|됩니다|갑니다|옵니다|합니까|입니까|습니까|됩니까|십시오)[\s.!?。]"
+    ).unwrap()
+});
 
 pub fn strip_html(html: &str) -> String {
     let stripped = SCRIPT_STYLE.replace_all(html, "");

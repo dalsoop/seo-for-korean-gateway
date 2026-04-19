@@ -2,10 +2,31 @@
 //! starts-with-keyword, power words.
 
 use crate::analyzer::ctx::Ctx;
+use crate::analyzer::helpers::keyword_regex;
 use crate::analyzer::types::{mk, Check, Status};
 
 pub fn run(ctx: &Ctx) -> Vec<Check> {
-    vec![title_length(ctx)]
+    vec![title_length(ctx), title_keyword_position(ctx)]
+}
+
+fn title_keyword_position(ctx: &Ctx) -> Check {
+    if ctx.focus_keyword.is_empty() || ctx.title_length == 0 {
+        return mk("title_keyword_position", "제목 내 키워드 위치", Status::Na, String::new(), 5);
+    }
+    let Some(re) = keyword_regex(&ctx.focus_keyword) else {
+        return mk("title_keyword_position", "제목 내 키워드 위치", Status::Na, String::new(), 5);
+    };
+    let Some(m) = re.find(&ctx.title) else {
+        return mk("title_keyword_position", "제목 내 키워드 위치", Status::Fail, "제목에 키워드가 없습니다.".into(), 5);
+    };
+    // Convert byte offset to char position so % is meaningful for Korean text.
+    let char_pos = ctx.title[..m.start()].chars().count();
+    let percent = (char_pos as f64 / ctx.title_length as f64 * 100.0).round() as i64;
+    if percent <= 30 {
+        mk("title_keyword_position", "제목 내 키워드 위치", Status::Pass, format!("키워드가 제목 앞부분 ({percent}%)에 있습니다."), 5)
+    } else {
+        mk("title_keyword_position", "제목 내 키워드 위치", Status::Warning, format!("키워드가 제목의 {percent}% 위치에 있습니다. 앞쪽으로 옮겨보세요."), 5)
+    }
 }
 
 fn title_length(ctx: &Ctx) -> Check {

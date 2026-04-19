@@ -6,7 +6,41 @@ use crate::analyzer::helpers::{IMG, IMG_ALT};
 use crate::analyzer::types::{mk, Check, Status};
 
 pub fn run(ctx: &Ctx) -> Vec<Check> {
-    vec![image_alt_coverage(ctx)]
+    vec![image_alt_coverage(ctx), image_density(ctx)]
+}
+
+fn image_density(ctx: &Ctx) -> Check {
+    if ctx.content_length < 300 {
+        return mk("image_density", "이미지 밀도", Status::Na, "본문이 짧아 평가 생략.".into(), 5);
+    }
+    let count = IMG.find_iter(&ctx.content_html).count();
+    let recommended = std::cmp::max(1, ctx.content_length / 600);
+    if count == 0 {
+        return mk(
+            "image_density",
+            "이미지 밀도",
+            Status::Warning,
+            format!("이미지가 없습니다. 약 {recommended}개 권장 ({}자 본문).", ctx.content_length),
+            5,
+        );
+    }
+    if count >= recommended {
+        mk(
+            "image_density",
+            "이미지 밀도",
+            Status::Pass,
+            format!("이미지 {count}개 (본문 {}자에 적절).", ctx.content_length),
+            5,
+        )
+    } else {
+        mk(
+            "image_density",
+            "이미지 밀도",
+            Status::Warning,
+            format!("이미지 {count}개. 본문 {}자에는 약 {recommended}개 권장.", ctx.content_length),
+            5,
+        )
+    }
 }
 
 fn image_alt_coverage(ctx: &Ctx) -> Check {
