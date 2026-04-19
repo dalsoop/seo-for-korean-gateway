@@ -3,7 +3,7 @@
 //! (해요체/합쇼체 mixing), passive voice detection.
 
 use crate::analyzer::ctx::Ctx;
-use crate::analyzer::helpers::{strip_html, HAEYO, HAPSYO, P_INNER, SENTENCE_END, TRANSITIONS};
+use crate::analyzer::helpers::{strip_html, HAEYO, HAPSYO, INFORMAL, P_INNER, SENTENCE_END, TRANSITIONS};
 use crate::analyzer::types::{mk, Check, Status};
 
 pub fn run(ctx: &Ctx) -> Vec<Check> {
@@ -12,7 +12,44 @@ pub fn run(ctx: &Ctx) -> Vec<Check> {
         sentence_length(ctx),
         transition_words(ctx),
         ending_consistency(ctx),
+        hanja_ratio(ctx),
+        informal_text(ctx),
     ]
+}
+
+fn hanja_ratio(ctx: &Ctx) -> Check {
+    if ctx.content_length < 200 {
+        return mk("hanja_ratio", "한자 사용", Status::Na, "본문이 짧아 평가 생략.".into(), 5);
+    }
+    // CJK Unified Ideographs: U+4E00..=U+9FFF, plus Extension A.
+    let hanja: usize = ctx.content_text.chars().filter(|c| {
+        let code = *c as u32;
+        (0x4E00..=0x9FFF).contains(&code) || (0x3400..=0x4DBF).contains(&code)
+    }).count();
+    if hanja == 0 {
+        return mk("hanja_ratio", "한자 사용", Status::Pass, "한자 사용 없음 (한국어 독자에게 친화적).".into(), 5);
+    }
+    let ratio = hanja as f64 / ctx.content_length as f64 * 100.0;
+    let r = format!("{ratio:.1}");
+    if ratio > 5.0 {
+        mk("hanja_ratio", "한자 사용", Status::Warning, format!("한자 비율 {r}% (높음). 일반 독자에게 어려울 수 있습니다."), 5)
+    } else {
+        mk("hanja_ratio", "한자 사용", Status::Pass, format!("한자 비율 {r}% (적절)."), 5)
+    }
+}
+
+fn informal_text(ctx: &Ctx) -> Check {
+    if ctx.content_length < 100 {
+        return mk("informal_text", "구어체/채팅체", Status::Na, "본문이 짧아 평가 생략.".into(), 5);
+    }
+    let count = INFORMAL.find_iter(&ctx.content_text).count();
+    if count == 0 {
+        return mk("informal_text", "구어체/채팅체", Status::Pass, "구어체/채팅체 없음.".into(), 5);
+    }
+    if count >= 3 {
+        return mk("informal_text", "구어체/채팅체", Status::Fail, format!("구어체/채팅체가 {count}회 등장 (ㅋㅋ/ㅠㅠ/헐 등). SEO 글에는 권장되지 않습니다."), 5);
+    }
+    mk("informal_text", "구어체/채팅체", Status::Warning, format!("구어체/채팅체 {count}회 등장. 정식 글에서는 자제하세요."), 5)
 }
 
 fn paragraph_length(ctx: &Ctx) -> Check {

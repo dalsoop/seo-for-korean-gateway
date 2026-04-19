@@ -6,7 +6,17 @@ use crate::analyzer::helpers::NON_ASCII;
 use crate::analyzer::types::{mk, Check, Status};
 
 pub fn run(ctx: &Ctx) -> Vec<Check> {
-    vec![slug_quality(ctx)]
+    vec![slug_quality(ctx), slug_uses_dashes(ctx)]
+}
+
+fn slug_uses_dashes(ctx: &Ctx) -> Check {
+    if ctx.slug.is_empty() {
+        return mk("slug_uses_dashes", "슬러그 구분자", Status::Na, String::new(), 5);
+    }
+    if ctx.slug.contains('_') {
+        return mk("slug_uses_dashes", "슬러그 구분자", Status::Warning, "슬러그에 언더스코어(_)가 있습니다. 검색엔진은 하이픈(-)을 권장합니다.".into(), 5);
+    }
+    mk("slug_uses_dashes", "슬러그 구분자", Status::Pass, "슬러그 구분자가 적절합니다.".into(), 5)
 }
 
 fn slug_quality(ctx: &Ctx) -> Check {

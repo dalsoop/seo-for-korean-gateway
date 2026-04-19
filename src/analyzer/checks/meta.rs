@@ -5,7 +5,23 @@ use crate::analyzer::ctx::Ctx;
 use crate::analyzer::types::{mk, Check, Status};
 
 pub fn run(ctx: &Ctx) -> Vec<Check> {
-    vec![meta_description_length(ctx)]
+    vec![meta_description_length(ctx), meta_starts_with_keyword(ctx)]
+}
+
+fn meta_starts_with_keyword(ctx: &Ctx) -> Check {
+    if ctx.focus_keyword.is_empty() {
+        return mk("meta_starts_with_keyword", "메타 시작 키워드", Status::Na, String::new(), 5);
+    }
+    if ctx.meta_description.is_empty() {
+        return mk("meta_starts_with_keyword", "메타 시작 키워드", Status::Warning, "메타 설명이 비어 있습니다.".into(), 5);
+    }
+    let meta_l = ctx.meta_description.to_lowercase();
+    let kw_l = ctx.focus_keyword.to_lowercase();
+    if meta_l.starts_with(&kw_l) {
+        mk("meta_starts_with_keyword", "메타 시작 키워드", Status::Pass, "메타 설명이 키워드로 시작합니다.".into(), 5)
+    } else {
+        mk("meta_starts_with_keyword", "메타 시작 키워드", Status::Warning, "메타 설명을 키워드로 시작하면 클릭률이 올라갑니다.".into(), 5)
+    }
 }
 
 fn meta_description_length(ctx: &Ctx) -> Check {

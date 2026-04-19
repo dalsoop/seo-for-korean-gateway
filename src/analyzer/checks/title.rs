@@ -6,7 +6,24 @@ use crate::analyzer::helpers::keyword_regex;
 use crate::analyzer::types::{mk, Check, Status};
 
 pub fn run(ctx: &Ctx) -> Vec<Check> {
-    vec![title_length(ctx), title_keyword_position(ctx)]
+    vec![
+        title_length(ctx),
+        title_keyword_position(ctx),
+        title_starts_with_keyword(ctx),
+    ]
+}
+
+fn title_starts_with_keyword(ctx: &Ctx) -> Check {
+    if ctx.focus_keyword.is_empty() || ctx.title.is_empty() {
+        return mk("title_starts_with_keyword", "제목 시작 키워드", Status::Na, String::new(), 5);
+    }
+    let title_l = ctx.title.to_lowercase();
+    let kw_l = ctx.focus_keyword.to_lowercase();
+    if title_l.starts_with(&kw_l) {
+        mk("title_starts_with_keyword", "제목 시작 키워드", Status::Pass, "제목이 키워드로 시작합니다.".into(), 5)
+    } else {
+        mk("title_starts_with_keyword", "제목 시작 키워드", Status::Warning, "제목을 키워드로 시작하면 SEO에 더 효과적입니다.".into(), 5)
+    }
 }
 
 fn title_keyword_position(ctx: &Ctx) -> Check {
