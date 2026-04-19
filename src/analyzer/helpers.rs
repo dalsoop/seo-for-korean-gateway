@@ -48,6 +48,19 @@ pub static INFORMAL: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?:ㅋㅋ+|ㅎㅎ+|ㅠㅠ+|ㅜㅜ+|ㅇㅇ|ㄴㄴ|헐\b|대박\b|레알\b|개꿀\b|쩐다\b|굿굿)").unwrap()
 });
 
+/// Korean passive-voice markers. Anchored to a sentence-end so
+/// '되다' inside a noun like '한정되다' on its own doesn't trigger.
+pub static PASSIVE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?:되었다|되었습니다|되었어요|된다|됩니다|돼요|받았다|받았습니다|받았어요|받는다|받습니다|당했다|당했습니다|당했어요|지었다|졌다|졌습니다|져요|져졌|되어졌|되어진|이루어졌|이루어진|만들어졌|만들어진|보여진다|보여졌다)[\s.!?。]"
+    ).unwrap()
+});
+
+/// All headings h1-h6 with their level captured.
+pub static HEADING: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)<h([1-6])\b[^>]*>").unwrap()
+});
+
 pub static HAPSYO: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?:합니다|입니다|습니다|됩니다|갑니다|옵니다|합니까|입니까|습니까|됩니까|십시오)[\s.!?。]"

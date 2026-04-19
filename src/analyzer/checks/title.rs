@@ -10,7 +10,19 @@ pub fn run(ctx: &Ctx) -> Vec<Check> {
         title_length(ctx),
         title_keyword_position(ctx),
         title_starts_with_keyword(ctx),
+        title_has_numbers(ctx),
     ]
+}
+
+fn title_has_numbers(ctx: &Ctx) -> Check {
+    if ctx.title.is_empty() {
+        return mk("title_has_numbers", "제목 숫자 포함", Status::Na, String::new(), 5);
+    }
+    if ctx.title.chars().any(|c| c.is_ascii_digit()) {
+        mk("title_has_numbers", "제목 숫자 포함", Status::Pass, "제목에 숫자가 있어 클릭률 향상에 유리합니다.".into(), 5)
+    } else {
+        mk("title_has_numbers", "제목 숫자 포함", Status::Warning, "제목에 숫자가 없습니다 (예: '5가지', '10가지'). 리스트형 제목은 클릭률이 높습니다.".into(), 5)
+    }
 }
 
 fn title_starts_with_keyword(ctx: &Ctx) -> Check {

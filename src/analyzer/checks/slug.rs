@@ -6,7 +6,24 @@ use crate::analyzer::helpers::NON_ASCII;
 use crate::analyzer::types::{mk, Check, Status};
 
 pub fn run(ctx: &Ctx) -> Vec<Check> {
-    vec![slug_quality(ctx), slug_uses_dashes(ctx)]
+    vec![slug_quality(ctx), slug_uses_dashes(ctx), slug_length(ctx)]
+}
+
+fn slug_length(ctx: &Ctx) -> Check {
+    if ctx.slug.is_empty() {
+        return mk("slug_length", "슬러그 길이", Status::Na, String::new(), 5);
+    }
+    let len = ctx.slug.len();
+    if len > 75 {
+        return mk("slug_length", "슬러그 길이", Status::Fail, format!("슬러그가 너무 깁니다 ({len}자). 75자 이하 권장."), 5);
+    }
+    if len > 50 {
+        return mk("slug_length", "슬러그 길이", Status::Warning, format!("슬러그가 다소 깁니다 ({len}자). 50자 이하가 이상적입니다."), 5);
+    }
+    if len < 3 {
+        return mk("slug_length", "슬러그 길이", Status::Warning, format!("슬러그가 너무 짧습니다 ({len}자)."), 5);
+    }
+    mk("slug_length", "슬러그 길이", Status::Pass, format!("슬러그 길이가 적절합니다 ({len}자)."), 5)
 }
 
 fn slug_uses_dashes(ctx: &Ctx) -> Check {

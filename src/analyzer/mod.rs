@@ -92,7 +92,7 @@ mod tests {
         let r = analyze(req("", "", "", "", ""));
         assert!(r.score <= 30, "got {}", r.score);
         assert_eq!(r.grade, "poor");
-        assert_eq!(r.checks.len(), 30);
+        assert_eq!(r.checks.len(), 35);
     }
 
     #[test]

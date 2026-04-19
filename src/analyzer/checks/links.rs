@@ -8,7 +8,40 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 pub fn run(ctx: &Ctx) -> Vec<Check> {
-    vec![internal_links(ctx), outbound_links(ctx), nofollow_outbound(ctx)]
+    vec![
+        internal_links(ctx),
+        outbound_links(ctx),
+        nofollow_outbound(ctx),
+        excessive_links(ctx),
+    ]
+}
+
+fn excessive_links(ctx: &Ctx) -> Check {
+    let total = ctx.link_counts.internal + ctx.link_counts.outbound;
+    if ctx.content_length < 300 {
+        return mk("excessive_links", "과도한 링크", Status::Na, "본문이 짧아 평가 생략.".into(), 5);
+    }
+    if total == 0 {
+        return mk("excessive_links", "과도한 링크", Status::Na, "링크가 없습니다.".into(), 5);
+    }
+    // Roughly 1 link per 100 chars is the soft cap for Korean text.
+    let limit = std::cmp::max(5, ctx.content_length / 100);
+    if total > limit {
+        return mk(
+            "excessive_links",
+            "과도한 링크",
+            Status::Warning,
+            format!("링크 {total}개가 본문 {}자에 비해 많습니다 (약 {limit}개 권장). 스팸으로 보일 수 있습니다.", ctx.content_length),
+            5,
+        );
+    }
+    mk(
+        "excessive_links",
+        "과도한 링크",
+        Status::Pass,
+        format!("링크 {total}개 (본문 {}자에 적절).", ctx.content_length),
+        5,
+    )
 }
 
 static A_TAG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<a\s+([^>]*?)>").unwrap());

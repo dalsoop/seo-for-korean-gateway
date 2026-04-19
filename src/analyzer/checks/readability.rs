@@ -3,7 +3,7 @@
 //! (해요체/합쇼체 mixing), passive voice detection.
 
 use crate::analyzer::ctx::Ctx;
-use crate::analyzer::helpers::{strip_html, HAEYO, HAPSYO, INFORMAL, P_INNER, SENTENCE_END, TRANSITIONS};
+use crate::analyzer::helpers::{strip_html, HAEYO, HAPSYO, INFORMAL, P_INNER, PASSIVE, SENTENCE_END, TRANSITIONS};
 use crate::analyzer::types::{mk, Check, Status};
 
 pub fn run(ctx: &Ctx) -> Vec<Check> {
@@ -14,7 +14,33 @@ pub fn run(ctx: &Ctx) -> Vec<Check> {
         ending_consistency(ctx),
         hanja_ratio(ctx),
         informal_text(ctx),
+        passive_voice(ctx),
     ]
+}
+
+fn passive_voice(ctx: &Ctx) -> Check {
+    if ctx.content_length < 200 {
+        return mk("passive_voice", "수동태 사용", Status::Na, "본문이 짧아 평가 생략.".into(), 5);
+    }
+    let passive = PASSIVE.find_iter(&ctx.content_text).count();
+    let sentences = SENTENCE_END
+        .split(&ctx.content_text)
+        .filter(|s| !s.trim().is_empty())
+        .count();
+    if sentences == 0 || passive == 0 {
+        return mk("passive_voice", "수동태 사용", Status::Pass, "수동태 사용 적음.".into(), 5);
+    }
+    let ratio = (passive as f64 / sentences as f64 * 100.0).round() as i64;
+    if ratio > 30 {
+        return mk(
+            "passive_voice",
+            "수동태 사용",
+            Status::Warning,
+            format!("수동태가 많습니다 ({passive}회, 문장의 {ratio}%). 능동태 위주 권장."),
+            5,
+        );
+    }
+    mk("passive_voice", "수동태 사용", Status::Pass, format!("수동태 사용 적절 ({passive}회, {ratio}%)."), 5)
 }
 
 fn hanja_ratio(ctx: &Ctx) -> Check {
