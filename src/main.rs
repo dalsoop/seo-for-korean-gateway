@@ -1,39 +1,50 @@
 //! SEO for Korean — Korean keyword matching gateway.
 //!
 //! HTTP service the WordPress plugin calls when it needs Korean-aware text
-//! analysis. The plugin already has a PHP regex fallback that strips common
-//! particles; this gateway exists so the analyzer logic lives in one place
-//! and can be upgraded to real morphological analysis (lindera + ko-dic)
-//! without redeploying every WP install.
+//! analysis. Two endpoints solve different problems:
 //!
-//! V1 ships the same regex strategy as the PHP fallback. V2 will swap the
-//! `match_keyword` implementation for lindera once the ko-dic asset hosting
-//! is sorted (lindera 0.32's S3 URL currently 404s).
+//!   /keyword/contains  — count keyword occurrences. lindera-aware: tokenizes
+//!                        text via mecab-ko-dic and counts surface matches,
+//!                        which correctly handles particles, conjugation,
+//!                        and compound forms the regex fallback misses.
 //!
-//! Endpoints:
-//!   GET  /health           — liveness probe
-//!   POST /keyword/contains — count keyword occurrences in text
-//!                            (particle-aware: '워드프레스' matches '워드프레스를')
+//!   /analyze           — full 35-check SEO analysis. Mirrors the plugin's
+//!                        local Content_Analyzer 1:1 so users see identical
+//!                        scores whether the gateway is up or not.
+//!
+//! Engine identifier in responses is "lindera" when the morphology
+//! tokenizer is loaded, "regex" otherwise. The plugin can show users
+//! which path their analysis took.
 
 mod analyzer;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use axum::{
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
+};
+use lindera::{
+    dictionary::load_dictionary, mode::Mode, segmenter::Segmenter, tokenizer::Tokenizer,
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-/// Common Korean particles that may follow a noun. Same list as the PHP
-/// fallback — keep them in sync.
+/// Common Korean particles for the regex fallback path.
 const PARTICLES: &str = "을|를|이|가|은|는|에|에서|의|와|과|도|만|보다|에게|께|로|으로|로서|으로서|로써|으로써|만큼|처럼|같이|마저|조차|이나|나|이라도|라도|이라고|라고|이라며|라며";
+
+const ENGINE_LINDERA: &str = "lindera";
+
+#[derive(Clone)]
+struct AppState {
+    tokenizer: Arc<Tokenizer>,
+}
 
 #[derive(Deserialize)]
 struct ContainsRequest {
@@ -45,9 +56,25 @@ struct ContainsRequest {
 struct ContainsResponse {
     count: usize,
     matches: Vec<String>,
-    /// Engine used to do the matching. "regex" for V1, "lindera" once we
-    /// finish the ko-dic dictionary integration.
     engine: &'static str,
+}
+
+#[derive(Deserialize)]
+struct TokenizeRequest {
+    text: String,
+}
+
+#[derive(Serialize)]
+struct TokenizeResponse {
+    tokens: Vec<TokenView>,
+    nouns: Vec<String>,
+    engine: &'static str,
+}
+
+#[derive(Serialize)]
+struct TokenView {
+    surface: String,
+    pos: String,
 }
 
 #[derive(Serialize)]
@@ -58,18 +85,17 @@ struct HealthResponse {
     engine: &'static str,
 }
 
-const ENGINE: &str = "regex";
-
-async fn health() -> Json<HealthResponse> {
+async fn health(State(_state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         service: "seo-for-korean-gateway",
         version: env!("CARGO_PKG_VERSION"),
-        engine: ENGINE,
+        engine: ENGINE_LINDERA,
     })
 }
 
 async fn keyword_contains(
+    State(state): State<AppState>,
     Json(req): Json<ContainsRequest>,
 ) -> Result<Json<ContainsResponse>, AppError> {
     let keyword = req.keyword.trim();
@@ -77,23 +103,84 @@ async fn keyword_contains(
         return Ok(Json(ContainsResponse {
             count: 0,
             matches: vec![],
-            engine: ENGINE,
+            engine: ENGINE_LINDERA,
         }));
     }
 
-    let pattern = format!("{}(?:{})?", regex::escape(keyword), PARTICLES);
-    let re = Regex::new(&pattern).map_err(|e| AppError::Internal(format!("regex: {e}")))?;
+    // Tokenize both keyword and text. Then walk text token-sequences looking
+    // for the keyword's token sequence. Particles drop out automatically
+    // because lindera splits them off as separate tokens — we never see
+    // '워드프레스를' as one token, only [워드프레스, 를].
+    let key_tokens = surfaces(&state.tokenizer, keyword)?;
+    if key_tokens.is_empty() {
+        return Ok(Json(ContainsResponse {
+            count: 0,
+            matches: vec![],
+            engine: ENGINE_LINDERA,
+        }));
+    }
+    let text_tokens = surfaces(&state.tokenizer, &req.text)?;
 
-    let matches: Vec<String> = re
-        .find_iter(&req.text)
-        .map(|m| m.as_str().to_string())
-        .collect();
+    let key_len = key_tokens.len();
+    let mut matches = Vec::new();
+    let mut i = 0usize;
+    while i + key_len <= text_tokens.len() {
+        if text_tokens[i..i + key_len] == key_tokens[..] {
+            matches.push(text_tokens[i..i + key_len].join(""));
+            i += key_len;
+        } else {
+            i += 1;
+        }
+    }
 
     Ok(Json(ContainsResponse {
         count: matches.len(),
         matches,
-        engine: ENGINE,
+        engine: ENGINE_LINDERA,
     }))
+}
+
+async fn tokenize(
+    State(state): State<AppState>,
+    Json(req): Json<TokenizeRequest>,
+) -> Result<Json<TokenizeResponse>, AppError> {
+    let raw = state
+        .tokenizer
+        .tokenize(&req.text)
+        .map_err(|e| AppError::Internal(format!("tokenize: {e}")))?;
+
+    let mut tokens = Vec::with_capacity(raw.len());
+    let mut nouns = Vec::new();
+
+    for mut tok in raw {
+        let details = tok.details();
+        // ko-dic POS layout: details[0] is the broad part-of-speech tag
+        // (NNG = 일반명사, NNP = 고유명사, NP = 대명사, NR = 수사, ...).
+        let pos = details
+            .first()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "UNK".to_string());
+
+        let surface = tok.surface.to_string();
+        if pos.starts_with("NN") || pos == "NP" || pos == "NR" {
+            nouns.push(surface.clone());
+        }
+
+        tokens.push(TokenView { surface, pos });
+    }
+
+    Ok(Json(TokenizeResponse {
+        tokens,
+        nouns,
+        engine: ENGINE_LINDERA,
+    }))
+}
+
+fn surfaces(tokenizer: &Tokenizer, text: &str) -> Result<Vec<String>, AppError> {
+    let raw = tokenizer
+        .tokenize(text)
+        .map_err(|e| AppError::Internal(format!("tokenize: {e}")))?;
+    Ok(raw.into_iter().map(|t| t.surface.to_string()).collect())
 }
 
 #[derive(Debug)]
@@ -110,11 +197,17 @@ impl IntoResponse for AppError {
     }
 }
 
-/// Sanity check the particle regex compiles at startup. If this fails the
-/// process should exit immediately rather than serve broken matches.
+/// Sanity check the particle regex compiles at startup.
 static SANITY: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!("test(?:{})?", PARTICLES)).expect("particle regex must compile")
 });
+
+fn build_tokenizer() -> anyhow::Result<Tokenizer> {
+    let dictionary = load_dictionary("embedded://ko-dic")
+        .context("load embedded ko-dic dictionary")?;
+    let segmenter = Segmenter::new(Mode::Normal, dictionary, None);
+    Ok(Tokenizer::new(segmenter))
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -126,14 +219,22 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     Lazy::force(&SANITY);
-    tracing::info!(engine = ENGINE, "particle regex compiled");
+
+    tracing::info!("loading mecab-ko-dic morphology dictionary");
+    let tokenizer = build_tokenizer()?;
+    tracing::info!(engine = ENGINE_LINDERA, "tokenizer ready");
+    let state = AppState {
+        tokenizer: Arc::new(tokenizer),
+    };
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/keyword/contains", post(keyword_contains))
+        .route("/morphology/tokenize", post(tokenize))
         .route("/analyze", post(analyze_handler))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive());
+        .layer(CorsLayer::permissive())
+        .with_state(state);
 
     let bind = std::env::var("BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
     let addr: SocketAddr = bind.parse().context("parse BIND address")?;
