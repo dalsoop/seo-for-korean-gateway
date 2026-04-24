@@ -47,7 +47,6 @@ fn hanja_ratio(ctx: &Ctx) -> Check {
     if ctx.content_length < 200 {
         return mk("hanja_ratio", "한자 사용", Status::Na, "본문이 짧아 평가 생략.".into(), 5);
     }
-    // CJK Unified Ideographs: U+4E00..=U+9FFF, plus Extension A.
     let hanja: usize = ctx.content_text.chars().filter(|c| {
         let code = *c as u32;
         (0x4E00..=0x9FFF).contains(&code) || (0x3400..=0x4DBF).contains(&code)
@@ -87,7 +86,7 @@ fn paragraph_length(ctx: &Ctx) -> Check {
     if lengths.is_empty() {
         return mk("paragraph_length", "문단 길이", Status::Na, "문단이 없습니다.".into(), 5);
     }
-    let max = *lengths.iter().max().unwrap();
+    let max = *lengths.iter().max().expect("lengths이 비어 있지 않음이 위에서 확인됨");
     let too_long = lengths.iter().filter(|&&l| l > 500).count();
     if too_long > 0 {
         mk("paragraph_length", "문단 길이", Status::Warning, format!("{}개 문단이 500자보다 깁니다 (최대 {}자). 가독성을 위해 분할하세요.", too_long, max), 5)

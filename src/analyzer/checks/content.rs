@@ -24,15 +24,11 @@ fn headings_hierarchy(ctx: &Ctx) -> Check {
         return mk("headings_hierarchy", "헤딩 계층", Status::Na, "헤딩이 없습니다.".into(), 5);
     }
 
-    // H1 inside post body is unusual — most themes already render the
-    // post title as H1. Multiple H1s confuse search engines.
     let h1_count = levels.iter().filter(|&&l| l == 1).count();
     if h1_count > 1 {
         return mk("headings_hierarchy", "헤딩 계층", Status::Warning, format!("본문에 H1이 {h1_count}개 있습니다. 보통 H1은 글 제목 1개만 사용합니다."), 5);
     }
 
-    // Skipped levels: e.g., H2 → H4 (jumping past H3). Search engines
-    // tolerate it but accessibility tools and screen readers complain.
     for w in levels.windows(2) {
         if w[1] > w[0] && w[1] - w[0] > 1 {
             return mk(

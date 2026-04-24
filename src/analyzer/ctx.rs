@@ -4,7 +4,10 @@
 //! same struct and we only walk regex/tokenize once for things multiple
 //! checks need (link counts, content text).
 
+use std::sync::Arc;
+
 use super::helpers::{strip_html, A_HREF};
+use super::keyword::KeywordCounter;
 use super::types::AnalyzeRequest;
 
 pub struct Ctx {
@@ -18,6 +21,7 @@ pub struct Ctx {
     pub meta_description: String,
     pub meta_description_length: usize,
     pub link_counts: LinkCounts,
+    pub counter: Arc<dyn KeywordCounter>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -26,7 +30,7 @@ pub struct LinkCounts {
     pub outbound: usize,
 }
 
-pub fn normalize(req: AnalyzeRequest) -> Ctx {
+pub fn normalize(req: AnalyzeRequest, counter: Arc<dyn KeywordCounter>) -> Ctx {
     let title = req.title.trim().to_string();
     let content_text = strip_html(&req.content);
     let meta_desc = req.meta_description.trim().to_string();
@@ -42,6 +46,7 @@ pub fn normalize(req: AnalyzeRequest) -> Ctx {
         meta_description_length: meta_desc.chars().count(),
         meta_description: meta_desc,
         link_counts,
+        counter,
     }
 }
 

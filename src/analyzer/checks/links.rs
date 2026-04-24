@@ -24,7 +24,6 @@ fn excessive_links(ctx: &Ctx) -> Check {
     if total == 0 {
         return mk("excessive_links", "과도한 링크", Status::Na, "링크가 없습니다.".into(), 5);
     }
-    // Roughly 1 link per 100 chars is the soft cap for Korean text.
     let limit = std::cmp::max(5, ctx.content_length / 100);
     if total > limit {
         return mk(
@@ -44,7 +43,7 @@ fn excessive_links(ctx: &Ctx) -> Check {
     )
 }
 
-static A_TAG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<a\s+([^>]*?)>").unwrap());
+static A_TAG: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?is)<a\s+([^>]*?)>").expect("유효한 정규식"));
 
 fn nofollow_outbound(ctx: &Ctx) -> Check {
     if ctx.link_counts.outbound == 0 {
@@ -55,7 +54,11 @@ fn nofollow_outbound(ctx: &Ctx) -> Check {
     let mut nofollow = 0usize;
     for cap in A_TAG.captures_iter(&ctx.content_html) {
         let attrs = &cap[1];
-        let Some(href_cap) = A_HREF.captures(&ctx.content_html[cap.get(0).unwrap().start()..cap.get(0).unwrap().end()]) else { continue };
+        let (tag_start, tag_end) = match (cap.get(0).map(|m| m.start()), cap.get(0).map(|m| m.end())) {
+            (Some(s), Some(e)) => (s, e),
+            _ => continue,
+        };
+        let Some(href_cap) = A_HREF.captures(&ctx.content_html[tag_start..tag_end]) else { continue };
         let href = href_cap[1].trim();
         let is_outbound = href.starts_with("http://")
             || href.starts_with("https://")

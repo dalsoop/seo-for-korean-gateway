@@ -2,7 +2,7 @@
 //! asks "is the keyword here?" lives here.
 
 use crate::analyzer::ctx::Ctx;
-use crate::analyzer::helpers::{keyword_count, strip_html, H2_INNER, NON_ASCII};
+use crate::analyzer::helpers::{strip_html, H2_INNER, NON_ASCII};
 use crate::analyzer::types::{mk, Check, Status};
 
 pub fn run(ctx: &Ctx) -> Vec<Check> {
@@ -30,7 +30,7 @@ fn focus_keyword_in_title(ctx: &Ctx) -> Check {
     if ctx.focus_keyword.is_empty() {
         return mk("focus_keyword_in_title", "제목에 포커스 키워드", Status::Na, String::new(), 10);
     }
-    if keyword_count(&ctx.title, &ctx.focus_keyword) > 0 {
+    if ctx.counter.count(&ctx.title, &ctx.focus_keyword) > 0 {
         mk("focus_keyword_in_title", "제목에 포커스 키워드", Status::Pass, "제목에 포커스 키워드가 포함되어 있습니다.".into(), 10)
     } else {
         mk("focus_keyword_in_title", "제목에 포커스 키워드", Status::Fail, "제목에 포커스 키워드가 없습니다.".into(), 10)
@@ -42,7 +42,7 @@ fn focus_keyword_in_first_paragraph(ctx: &Ctx) -> Check {
         return mk("focus_keyword_in_first_paragraph", "첫 단락에 포커스 키워드", Status::Na, String::new(), 10);
     }
     let first: String = ctx.content_text.chars().take(200).collect();
-    if keyword_count(&first, &ctx.focus_keyword) > 0 {
+    if ctx.counter.count(&first, &ctx.focus_keyword) > 0 {
         mk("focus_keyword_in_first_paragraph", "첫 단락에 포커스 키워드", Status::Pass, "첫 단락에 포커스 키워드가 등장합니다.".into(), 10)
     } else {
         mk("focus_keyword_in_first_paragraph", "첫 단락에 포커스 키워드", Status::Warning, "첫 200자 안에 포커스 키워드가 없습니다.".into(), 10)
@@ -53,7 +53,7 @@ fn focus_keyword_in_content(ctx: &Ctx) -> Check {
     if ctx.focus_keyword.is_empty() {
         return mk("focus_keyword_in_content", "본문에 포커스 키워드", Status::Na, String::new(), 10);
     }
-    let count = keyword_count(&ctx.content_text, &ctx.focus_keyword);
+    let count = ctx.counter.count(&ctx.content_text, &ctx.focus_keyword);
     if count == 0 {
         mk("focus_keyword_in_content", "본문에 포커스 키워드", Status::Fail, "본문에 포커스 키워드가 없습니다.".into(), 10)
     } else if count >= 2 {
@@ -70,7 +70,7 @@ fn keyword_density(ctx: &Ctx) -> Check {
     if ctx.content_length == 0 {
         return mk("keyword_density", "키워드 밀도", Status::Na, "본문이 비어 있습니다.".into(), 5);
     }
-    let count = keyword_count(&ctx.content_text, &ctx.focus_keyword);
+    let count = ctx.counter.count(&ctx.content_text, &ctx.focus_keyword);
     let kw_chars = ctx.focus_keyword.chars().count();
     let density = count as f64 * kw_chars as f64 / ctx.content_length as f64 * 100.0;
     let d = format!("{density:.2}");
@@ -94,7 +94,7 @@ fn keyword_in_meta_description(ctx: &Ctx) -> Check {
     if ctx.meta_description_length == 0 {
         return mk("keyword_in_meta_description", "메타 설명에 키워드", Status::Warning, "메타 설명이 비어 있습니다.".into(), 5);
     }
-    if keyword_count(&ctx.meta_description, &ctx.focus_keyword) > 0 {
+    if ctx.counter.count(&ctx.meta_description, &ctx.focus_keyword) > 0 {
         mk("keyword_in_meta_description", "메타 설명에 키워드", Status::Pass, "메타 설명에 키워드가 포함되어 있습니다.".into(), 5)
     } else {
         mk("keyword_in_meta_description", "메타 설명에 키워드", Status::Warning, "메타 설명에 키워드가 없습니다.".into(), 5)
@@ -112,7 +112,7 @@ fn keyword_in_h2(ctx: &Ctx) -> Check {
     if h2s.is_empty() {
         return mk("keyword_in_h2", "H2에 키워드", Status::Na, "H2 헤딩이 없습니다.".into(), 5);
     }
-    let with_kw = h2s.iter().filter(|h| keyword_count(h, &ctx.focus_keyword) > 0).count();
+    let with_kw = h2s.iter().filter(|h| ctx.counter.count(h, &ctx.focus_keyword) > 0).count();
     if with_kw > 0 {
         mk("keyword_in_h2", "H2에 키워드", Status::Pass, format!("{}개 H2에 키워드가 포함되어 있습니다.", with_kw), 5)
     } else {

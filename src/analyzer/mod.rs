@@ -15,14 +15,19 @@
 mod checks;
 mod ctx;
 mod helpers;
+pub mod keyword;
 mod types;
 
+use std::sync::Arc;
+
+pub use keyword::KeywordCounter;
+#[cfg(test)]
+pub use keyword::RegexCounter;
 pub use types::{AnalyzeRequest, AnalyzeResponse};
 
-const ENGINE: &str = "regex";
-
-pub fn analyze(req: AnalyzeRequest) -> AnalyzeResponse {
-    let context = ctx::normalize(req);
+pub fn analyze(req: AnalyzeRequest, counter: Arc<dyn KeywordCounter>) -> AnalyzeResponse {
+    let engine = counter.engine();
+    let context = ctx::normalize(req, counter);
 
     let mut all = Vec::new();
     all.extend(checks::title::run(&context));
@@ -39,7 +44,7 @@ pub fn analyze(req: AnalyzeRequest) -> AnalyzeResponse {
         score,
         grade: grade(score),
         checks: all,
-        engine: ENGINE,
+        engine,
     }
 }
 
@@ -87,9 +92,13 @@ mod tests {
         }
     }
 
+    fn run(req: AnalyzeRequest) -> AnalyzeResponse {
+        analyze(req, RegexCounter::shared())
+    }
+
     #[test]
     fn empty_post_is_poor() {
-        let r = analyze(req("", "", "", "", ""));
+        let r = run(req("", "", "", "", ""));
         assert!(r.score <= 30, "got {}", r.score);
         assert_eq!(r.grade, "poor");
         assert_eq!(r.checks.len(), 35);
@@ -112,7 +121,7 @@ mod tests {
 <img src=\"d.jpg\" alt=\"워드프레스 대시보드\" />\
 <p>대시보드에서 글 작성, 미디어 업로드, 댓글 관리 등 모든 작업을 할 수 있습니다. \
 워드프레스는 이 단순함과 확장성을 동시에 제공한다는 점에서 매력적입니다.</p>";
-        let r = analyze(req(
+        let r = run(req(
             "워드프레스 입문 가이드: 한국어 블로그를 시작하는 가장 쉬운 방법",
             content,
             "wordpress-guide-korean-blog",
@@ -125,7 +134,7 @@ mod tests {
 
     #[test]
     fn korean_particles_caught_via_regex() {
-        let r = analyze(req(
+        let r = run(req(
             "테스트",
             "<p>워드프레스를 사용하면 좋습니다. 워드프레스의 장점은 많습니다. 워드프레스가 인기있어요.</p>",
             "test", "워드프레스", "",
@@ -137,21 +146,21 @@ mod tests {
 
     #[test]
     fn korean_slug_warns() {
-        let r = analyze(req("제목입니다 적당하게", "<p>본문</p>", "한국어-슬러그", "", ""));
+        let r = run(req("제목입니다 적당하게", "<p>본문</p>", "한국어-슬러그", "", ""));
         let c = r.checks.iter().find(|c| c.id == "slug_quality").unwrap();
         assert_eq!(c.status, Status::Warning);
     }
 
     #[test]
     fn h2_count_pass_at_two() {
-        let r = analyze(req("t", "<h2>a</h2><p>b</p><h2>c</h2>", "x", "", ""));
+        let r = run(req("t", "<h2>a</h2><p>b</p><h2>c</h2>", "x", "", ""));
         let c = r.checks.iter().find(|c| c.id == "h2_count").unwrap();
         assert_eq!(c.status, Status::Pass);
     }
 
     #[test]
     fn image_alt_full_coverage_passes() {
-        let r = analyze(req("t", "<img src=x alt=\"a\" /><img src=y alt=\"b\" />", "x", "", ""));
+        let r = run(req("t", "<img src=x alt=\"a\" /><img src=y alt=\"b\" />", "x", "", ""));
         let c = r.checks.iter().find(|c| c.id == "image_alt_coverage").unwrap();
         assert_eq!(c.status, Status::Pass);
     }
@@ -161,7 +170,7 @@ mod tests {
         let filler = "한국어 본문이 충분히 길게 작성되어 있습니다. ".repeat(80);
         let kw_block = " 워드프레스 ".repeat(8);
         let content = format!("<p>{}{}</p>", filler, kw_block);
-        let r = analyze(req("t", &content, "", "워드프레스", ""));
+        let r = run(req("t", &content, "", "워드프레스", ""));
         let c = r.checks.iter().find(|c| c.id == "keyword_density").unwrap();
         assert_eq!(c.status, Status::Pass, "got {:?}: {}", c.status, c.message);
     }
@@ -169,7 +178,7 @@ mod tests {
     #[test]
     fn keyword_density_excess_fails() {
         let content = format!("<p>{}</p>", "워드프레스 ".repeat(20));
-        let r = analyze(req("t", &content, "", "워드프레스", ""));
+        let r = run(req("t", &content, "", "워드프레스", ""));
         let c = r.checks.iter().find(|c| c.id == "keyword_density").unwrap();
         assert_eq!(c.status, Status::Fail);
     }
@@ -177,7 +186,7 @@ mod tests {
     #[test]
     fn internal_and_outbound_links_counted_separately() {
         let html = r##"<p><a href="/about">about</a> <a href="https://example.com">ext</a> <a href="#top">anchor</a> <a href="mailto:x@y">m</a></p>"##;
-        let r = analyze(req("t", html, "", "", ""));
+        let r = run(req("t", html, "", "", ""));
         let i = r.checks.iter().find(|c| c.id == "internal_links").unwrap();
         let o = r.checks.iter().find(|c| c.id == "outbound_links").unwrap();
         assert_eq!(i.status, Status::Pass);
@@ -189,7 +198,7 @@ mod tests {
     #[test]
     fn keyword_in_h2_passes_when_present() {
         let html = "<h2>워드프레스 입문</h2><p>본문</p><h2>설치</h2>";
-        let r = analyze(req("t", html, "", "워드프레스", ""));
+        let r = run(req("t", html, "", "워드프레스", ""));
         let c = r.checks.iter().find(|c| c.id == "keyword_in_h2").unwrap();
         assert_eq!(c.status, Status::Pass);
     }
@@ -198,7 +207,7 @@ mod tests {
     fn long_paragraph_warns() {
         let long = "가".repeat(600);
         let html = format!("<p>{long}</p>");
-        let r = analyze(req("t", &html, "", "", ""));
+        let r = run(req("t", &html, "", "", ""));
         let c = r.checks.iter().find(|c| c.id == "paragraph_length").unwrap();
         assert_eq!(c.status, Status::Warning);
     }

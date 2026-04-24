@@ -17,6 +17,7 @@
 //! which path their analysis took.
 
 mod analyzer;
+mod lindera_counter;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -31,19 +32,18 @@ use axum::{
 use lindera::{
     dictionary::load_dictionary, mode::Mode, segmenter::Segmenter, tokenizer::Tokenizer,
 };
-use once_cell::sync::Lazy;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-/// Common Korean particles for the regex fallback path.
-const PARTICLES: &str = "을|를|이|가|은|는|에|에서|의|와|과|도|만|보다|에게|께|로|으로|로서|으로서|로써|으로써|만큼|처럼|같이|마저|조차|이나|나|이라도|라도|이라고|라고|이라며|라며";
+use analyzer::KeywordCounter;
+use lindera_counter::LinderaCounter;
 
 const ENGINE_LINDERA: &str = "lindera";
 
 #[derive(Clone)]
 struct AppState {
     tokenizer: Arc<Tokenizer>,
+    counter: Arc<dyn KeywordCounter>,
 }
 
 #[derive(Deserialize)]
@@ -107,10 +107,6 @@ async fn keyword_contains(
         }));
     }
 
-    // Tokenize both keyword and text. Then walk text token-sequences looking
-    // for the keyword's token sequence. Particles drop out automatically
-    // because lindera splits them off as separate tokens — we never see
-    // '워드프레스를' as one token, only [워드프레스, 를].
     let key_tokens = surfaces(&state.tokenizer, keyword)?;
     if key_tokens.is_empty() {
         return Ok(Json(ContainsResponse {
@@ -154,8 +150,6 @@ async fn tokenize(
 
     for mut tok in raw {
         let details = tok.details();
-        // ko-dic POS layout: details[0] is the broad part-of-speech tag
-        // (NNG = 일반명사, NNP = 고유명사, NP = 대명사, NR = 수사, ...).
         let pos = details
             .first()
             .map(|s| s.to_string())
@@ -197,11 +191,6 @@ impl IntoResponse for AppError {
     }
 }
 
-/// Sanity check the particle regex compiles at startup.
-static SANITY: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(&format!("test(?:{})?", PARTICLES)).expect("particle regex must compile")
-});
-
 fn build_tokenizer() -> anyhow::Result<Tokenizer> {
     let dictionary = load_dictionary("embedded://ko-dic")
         .context("load embedded ko-dic dictionary")?;
@@ -218,13 +207,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    Lazy::force(&SANITY);
-
     tracing::info!("loading mecab-ko-dic morphology dictionary");
-    let tokenizer = build_tokenizer()?;
+    let tokenizer = Arc::new(build_tokenizer()?);
     tracing::info!(engine = ENGINE_LINDERA, "tokenizer ready");
+    let counter: Arc<dyn KeywordCounter> = Arc::new(LinderaCounter::new(tokenizer.clone()));
     let state = AppState {
-        tokenizer: Arc::new(tokenizer),
+        tokenizer,
+        counter,
     };
 
     let app = Router::new()
@@ -249,9 +238,10 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn analyze_handler(
+    State(state): State<AppState>,
     Json(req): Json<analyzer::AnalyzeRequest>,
 ) -> Json<analyzer::AnalyzeResponse> {
-    Json(analyzer::analyze(req))
+    Json(analyzer::analyze(req, state.counter.clone()))
 }
 
 async fn shutdown_signal() {

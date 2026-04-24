@@ -4,9 +4,11 @@ Korean text-analysis gateway for the [SEO for Korean](https://github.com/dalsoop
 
 ## Status
 
-**v0.2.0** — real morphological tokenization via **lindera** + **mecab-ko-dic** (embedded at compile time).
+**v0.2.0** — real morphological tokenization via **lindera 3.0** + **mecab-ko-dic** (embedded at compile time).
 
 The plugin's PHP fallback uses a regex over a hard-coded list of 25 particles, which catches ~80% of cases. The gateway's lindera engine catches everything: compound particles, conjugation forms, novel morphemes, mid-word hits the regex can't find. Same input, more accurate output, single upgrade benefits every WP install.
+
+Reference deployment: LXC 50200 (Debian 13). Binary size 118 MB (mecab-ko-dic embedded). Cold start ~50 ms (`tokenizer ready engine="lindera"` log line). Memory footprint ~63 MB resident at idle.
 
 ## Endpoints
 
@@ -65,7 +67,7 @@ curl -s http://localhost:8787/keyword/contains \
 cargo build --release
 ```
 
-First build downloads + compiles mecab-ko-dic (~2-3 minutes on a workstation, 5-10 on a small VM). Resulting binary is ~120 MB because the dictionary ships embedded — no runtime dict file to manage.
+First build downloads + compiles mecab-ko-dic (~2-3 minutes on a workstation, 5-10 on a small VM; 1m07s on the reference LXC). Incremental rebuild after dependency change ~30 s. Resulting binary is 118 MB because the dictionary ships embedded — no runtime dict file to manage.
 
 ## Run
 
